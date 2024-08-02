@@ -34,7 +34,7 @@ fn create_file_writer(game_id: u64) -> Result<BufWriter<File>, Box<dyn Error>> {
     Ok(BufWriter::new(file))
 }
 
-async fn get_game_history(client: &RESTClient, game_id: u64) -> Result<(), Box<dyn Error>> {
+async fn get_game_history(client: &RESTClient, game_id: u64, main_character: &str) -> Result<(), Box<dyn Error>> {
     let history_endpoint = format!("/lol-match-history/v1/games/{}", game_id);
     let history_response = client.get(history_endpoint).await?;
     let game_info: Value = serde_json::from_value(history_response.clone())?;
@@ -49,7 +49,7 @@ async fn get_game_history(client: &RESTClient, game_id: u64) -> Result<(), Box<d
     let champion_data = ChampionData::new();
     let player_info = create_player_info(&game_info, &champion_data)?;
     
-    process_timeline(&timeline_data, &player_info, &mut writer)?;
+    process_timeline(&timeline_data, &player_info, &mut writer, main_character)?;
 
     writer.flush()?;
     Ok(())
@@ -72,13 +72,30 @@ fn create_player_info(game_info: &Value, champion_data: &ChampionData) -> Result
     Ok(player_info)
 }
 
-fn process_timeline(timeline_data: &Value, player_info: &HashMap<u64, PlayerInfo>, writer: &mut impl Write) -> Result<(), Box<dyn Error>> {
+fn process_timeline(timeline_data: &Value, player_info: &HashMap<u64, PlayerInfo>, writer: &mut impl Write, main_character: &str) -> Result<(), Box<dyn Error>> {
     let mut previous_states: HashMap<u64, PlayerState> = HashMap::new();
+    let mut main_character_id = 0;
+
+    // Find the main character's participant ID
+    for (id, info) in player_info {
+        if info.champion_name == main_character {
+            main_character_id = *id;
+            break;
+        }
+    }
+
+    if main_character_id == 0 {
+        return Err(Box::new(std::io::Error::new(std::io::ErrorKind::NotFound, "Main character not found in the game")));
+    }
 
     if let Some(frames) = timeline_data["frames"].as_array() {
         for (index, frame) in frames.iter().enumerate() {
             let timestamp = frame["timestamp"].as_u64().unwrap_or(0);
             writeln!(writer, "## {} Minute Mark ({} ms):", timestamp / 60000, timestamp)?;
+
+            // Calculate and write gold difference first
+            let gold_difference = calculate_gold_difference(frame, player_info, main_character_id);
+            writeln!(writer, "New Gold Difference: {}{}", if gold_difference >= 0 { "+" } else { "" }, gold_difference)?;
 
             process_player_states(frame, player_info, &mut previous_states, writer)?;
             process_events(frame, player_info, writer)?;
@@ -91,6 +108,27 @@ fn process_timeline(timeline_data: &Value, player_info: &HashMap<u64, PlayerInfo
 
     print_map_legend(writer)?;
     Ok(())
+}
+
+fn calculate_gold_difference(frame: &Value, player_info: &HashMap<u64, PlayerInfo>, main_character_id: u64) -> i64 {
+    let mut main_team_gold = 0;
+    let mut enemy_team_gold = 0;
+
+    if let Some(participant_frames) = frame["participantFrames"].as_object() {
+        for (id, data) in participant_frames {
+            let player_id = id.parse::<u64>().unwrap();
+            let player = player_info.get(&player_id).unwrap();
+            let total_gold = data["totalGold"].as_u64().unwrap_or(0) as i64;
+
+            if player.team == player_info[&main_character_id].team {
+                main_team_gold += total_gold;
+            } else {
+                enemy_team_gold += total_gold;
+            }
+        }
+    }
+
+    main_team_gold - enemy_team_gold
 }
 
 fn process_player_states(frame: &Value, player_info: &HashMap<u64, PlayerInfo>, previous_states: &mut HashMap<u64, PlayerState>, writer: &mut impl Write) -> Result<(), Box<dyn Error>> {
@@ -133,7 +171,7 @@ fn print_player_changes(champion_name: &str, team: &str, current: &PlayerState, 
 
     let gold_change = current.total_gold as i64 - previous.total_gold as i64;
     if gold_change.abs() > 100 {
-        changes.push(format!("gold changed by {}", gold_change));
+        changes.push(format!("total gold increased by {}", gold_change));
     }
 
     let minion_change = current.minions_killed as i64 - previous.minions_killed as i64;
@@ -272,9 +310,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let lcu_rest_client = RESTClient::new()?;
     
     // Hardcoded game_id (replace with an actual game_id)
-    let game_id = 5047559968;
+    let game_id = 5037238834;
+
+    let main_character = "Jinx";
     
-    get_game_history(&lcu_rest_client, game_id).await?;
+    get_game_history(&lcu_rest_client, game_id, main_character).await?;
     
     Ok(())
 }
