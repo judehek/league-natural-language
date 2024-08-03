@@ -75,6 +75,7 @@ fn create_player_info(game_info: &Value, champion_data: &ChampionData) -> Result
 fn process_timeline(timeline_data: &Value, player_info: &HashMap<u64, PlayerInfo>, writer: &mut impl Write, main_character: &str) -> Result<(), Box<dyn Error>> {
     let mut previous_states: HashMap<u64, PlayerState> = HashMap::new();
     let mut main_character_id = 0;
+    let mut previous_gold_difference = 0;
 
     // Find the main character's participant ID
     for (id, info) in player_info {
@@ -93,9 +94,15 @@ fn process_timeline(timeline_data: &Value, player_info: &HashMap<u64, PlayerInfo
             let timestamp = frame["timestamp"].as_u64().unwrap_or(0);
             writeln!(writer, "## {} Minute Mark ({} ms):", timestamp / 60000, timestamp)?;
 
-            // Calculate and write gold difference first
-            let gold_difference = calculate_gold_difference(frame, player_info, main_character_id);
-            writeln!(writer, "New Gold Difference: {}{}", if gold_difference >= 0 { "+" } else { "" }, gold_difference)?;
+            // Calculate gold difference
+            let current_gold_difference = calculate_gold_difference(frame, player_info, main_character_id);
+            let gold_difference_change = current_gold_difference - previous_gold_difference;
+
+            // Write the change in gold difference
+            writeln!(writer, "Gold Difference Change: {}{}", 
+                if gold_difference_change >= 0 { "+" } else { "" }, gold_difference_change)?;
+
+            previous_gold_difference = current_gold_difference;
 
             process_player_states(frame, player_info, &mut previous_states, writer)?;
             process_events(frame, player_info, writer)?;
@@ -310,7 +317,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let lcu_rest_client = RESTClient::new()?;
     
     // Hardcoded game_id (replace with an actual game_id)
-    let game_id = 5037238834;
+    let game_id = 5067620298;
 
     let main_character = "Jinx";
     
